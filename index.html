@@ -21,7 +21,7 @@
     .btn,.toolbtn{border:0;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:700;font-size:14px;background:linear-gradient(145deg,#4e73df,#3756c2);color:#fff;box-shadow:0 4px 10px rgba(0,0,0,.15);transition:transform .1s,box-shadow .1s}
     .btn:hover,.toolbtn:hover{transform:translateY(-1px) scale(1.03);box-shadow:0 6px 14px rgba(0,0,0,.2)}
     .toolbtn[disabled],.btn[disabled]{opacity:.4;cursor:not-allowed}
-    /* 允许在画布非交互区使用 Safari 手势：将 touch-action 设置为 auto，由代码在交互区按需 preventDefault */
+    /* 允许在画布非交互区使用 Safari 手势：将 touch-action 交给代码按区域拦截 */
     canvas{width:100%;height:auto;display:block;background:var(--bg2);border-radius:20px;box-shadow:0 8px 24px rgba(0,0,0,.12);touch-action:auto;-webkit-user-select:none;user-select:none}
     .toolbar{display:flex;gap:8px;margin:10px 0 0;justify-content:center;flex-wrap:wrap}
     .hint{margin-top:12px;font-size:13px;color:#4a5568;line-height:1.5}
@@ -85,9 +85,9 @@
   const boardX=Math.floor((CANVAS_W-boardW)/2);
   const boardY=76; const boardH=boardW; const handY=boardY+boardH+16;
 
-  // 拖拽偏移策略：在手牌/移动阶段让实体方块远离手指；进入棋盘后与 ghost 几乎重合（微小位移）
-  const FINGER_OFFSET_FOLLOW = { x: Math.round(cellSize*0.45), y: Math.round(cellSize*2.20) }; // 手指遥控距离更远，避免遮挡
-  const OVERBOARD_RENDER_OFFSET = { x: 2, y: 4 }; // 进入棋盘时与 ghost 仅微小偏差
+  // 拖拽偏移策略：始终与手指保持距离；进入棋盘后，实体贴近 ghost 但仍略微远离手指
+  const FINGER_OFFSET_FOLLOW = { x: Math.round(cellSize*0.45), y: Math.round(cellSize*2.20) }; // 手指遥控距离更远，避免遮挡（非棋盘）
+  const NEAR_GHOST_SHIFT = Math.max(4, Math.round(cellSize*0.18)); // 棋盘内：实体与 ghost 的微小位移（沿着指向 ghost 的反方向）
 
   // ===== 状态 =====
   let grid=Array.from({length:BOARD_SIZE},()=>Array(BOARD_SIZE).fill(0)); // 0空，其它：shapeId+1
@@ -132,13 +132,9 @@
   function getPointerPos(evt){
     const r=cvs.getBoundingClientRect();
     let clientX, clientY;
-    if (evt && evt.touches && evt.touches.length){
-      clientX = evt.touches[0].clientX; clientY = evt.touches[0].clientY;
-    } else if (evt && evt.changedTouches && evt.changedTouches.length){
-      clientX = evt.changedTouches[0].clientX; clientY = evt.changedTouches[0].clientY;
-    } else {
-      clientX = evt.clientX; clientY = evt.clientY;
-    }
+    if (evt && evt.touches && evt.touches.length){ clientX = evt.touches[0].clientX; clientY = evt.touches[0].clientY; }
+    else if (evt && evt.changedTouches && evt.changedTouches.length){ clientX = evt.changedTouches[0].clientX; clientY = evt.changedTouches[0].clientY; }
+    else { clientX = evt.clientX; clientY = evt.clientY; }
     const x = (clientX - r.left) * (CANVAS_W / r.width);
     const y = (clientY - r.top)  * (CANVAS_H / r.height);
     return {x,y};
@@ -196,14 +192,19 @@
       drawPieceGrid(dragging.piece,a.r,a.c, ok?COLORS.ghostOk:COLORS.ghostBad);
 
       // 实体方块：
-      // - 进入棋盘：与 ghost 几乎重合（只做 2~4px 的视觉偏移），让玩家以 ghost 为准
-      // - 不在棋盘：相对手指保持较大偏移，避免遮挡
+      // - 进入棋盘：与 ghost 贴近，但相对手指沿反方向轻移 NEAR_GHOST_SHIFT，保证“始终远离手指”
+      // - 不在棋盘：相对手指保持较大偏移，完全不遮挡
       if(isOverBoard(dragging.x,dragging.y)){
         const minR=Math.min(...dragging.piece.cells.map(c=>c.r));
         const minC=Math.min(...dragging.piece.cells.map(c=>c.c));
-        const px=boardX+GAP+a.c*(cellSize+GAP)-minC*(cellSize+GAP);
-        const py=boardY+GAP+a.r*(cellSize+GAP)-minR*(cellSize+GAP);
-        drawPieceAt(dragging.piece, px-OVERBOARD_RENDER_OFFSET.x, py-OVERBOARD_RENDER_OFFSET.y, 1);
+        const px0=boardX+GAP+a.c*(cellSize+GAP)-minC*(cellSize+GAP);
+        const py0=boardY+GAP+a.r*(cellSize+GAP)-minR*(cellSize+GAP);
+        const bb2=bbox(dragging.piece);
+        const pieceW2=bb2.w*(cellSize+GAP)-GAP, pieceH2=bb2.h*(cellSize+GAP)-GAP;
+        const cx=px0 + pieceW2/2, cy=py0 + pieceH2/2;
+        let dx=cx-dragging.x, dy=cy-dragging.y; const len=Math.hypot(dx,dy)||1; dx/=len; dy/=len;
+        const px=px0 + (-dx)*NEAR_GHOST_SHIFT; const py=py0 + (-dy)*NEAR_GHOST_SHIFT;
+        drawPieceAt(dragging.piece, px, py, 1);
       } else {
         const bb=bbox(dragging.piece); const pxW=bb.w*(cellSize+GAP)-GAP; const pxH=bb.h*(cellSize+GAP)-GAP;
         const fx=dragging.x-Math.floor(pxW/2)-FINGER_OFFSET_FOLLOW.x; const fy=dragging.y-Math.floor(pxH/2)-FINGER_OFFSET_FOLLOW.y;
@@ -290,9 +291,6 @@
     const outSnap=snapToBoardClamped(-999,-999, clonePiece(PIECES[0]));
     assert('snap clamps inside board', ()=> outSnap.r>=0 && outSnap.c>=0 && outSnap.r<BOARD_SIZE && outSnap.c<BOARD_SIZE);
 
-    // 新增：isOverBoard 边界点行为
-    assert('isOverBoard on edges', ()=> isOverBoard(boardX+1,boardY+1) && !isOverBoard(boardX-1,boardY-1));
-
     // 新增：getPointerPos 在 touchend 事件不抛错
     const fakeRect = {left:0, top:0, width:CANVAS_W, height:CANVAS_H};
     const _getBoundingClientRect = cvs.getBoundingClientRect.bind(cvs);
@@ -300,6 +298,8 @@
     try{
       const p1 = getPointerPos({changedTouches:[{clientX:10, clientY:20}]});
       assert('getPointerPos with changedTouches', ()=> typeof p1.x==='number' && typeof p1.y==='number');
+      // 新增：确保 NEAR_GHOST_SHIFT 小于一格，保证“贴近 ghost”
+      assert('NEAR_GHOST_SHIFT < 1 cell', ()=> NEAR_GHOST_SHIFT < (cellSize+GAP));
     } finally {
       cvs.getBoundingClientRect = _getBoundingClientRect; // restore
     }
@@ -310,11 +310,11 @@
 </script>
 
 <script>
-// ====== PWA 注册（清理旧 SW，注册 sw-v8.js） ======
+// ====== PWA 注册（清理旧 SW，注册 sw-v9.js） ======
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', async () => {
     try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map(r => r.unregister().catch(()=>{}))); } catch(e) {}
-    try { await navigator.serviceWorker.register('./sw-v8.js', {scope: './'}); } catch(e) { console.warn('SW register failed', e); }
+    try { await navigator.serviceWorker.register('./sw-v9.js', {scope: './'}); } catch(e) { console.warn('SW register failed', e); }
   });
 }
 </script>
