@@ -13,7 +13,7 @@
   <title>Block Blast · Web 试玩（长按拖动 / 点击旋转 / 撤回 / 全局吸附）</title>
   <style>
     :root { --bg1:#fdfdfd; --bg2:#eef3fb; --grid:#c8d4e5; --cellEmpty:#e4eaf3; --ink:#102032; --ghostOk:rgba(102,166,255,.40); --ghostBad:rgba(239,91,91,.40); --hint:rgba(255,215,64,.55); }
-    html,body{margin:0;height:100%;background:var(--bg1);font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+    html,body{margin:0;height:100%;background:var(--bg1);font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:var(--ink)}
     .wrap{max-width:480px;margin:auto;padding:16px}
     .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
     .score{font-size:22px;font-weight:800;color:#3756c2;letter-spacing:.2px}
@@ -21,7 +21,7 @@
     .btn,.toolbtn{border:0;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:700;font-size:14px;background:linear-gradient(145deg,#4e73df,#3756c2);color:#fff;box-shadow:0 4px 10px rgba(0,0,0,.15);transition:transform .1s,box-shadow .1s}
     .btn:hover,.toolbtn:hover{transform:translateY(-1px) scale(1.03);box-shadow:0 6px 14px rgba(0,0,0,.2)}
     .toolbtn[disabled],.btn[disabled]{opacity:.4;cursor:not-allowed}
-    /* 允许在画布非交互区使用 Safari 手势：将 touch-action 交给代码按区域拦截 */
+    /* 画布外保持系统手势：仅在代码里按区域拦截 */
     canvas{width:100%;height:auto;display:block;background:var(--bg2);border-radius:20px;box-shadow:0 8px 24px rgba(0,0,0,.12);touch-action:auto;-webkit-user-select:none;user-select:none}
     .toolbar{display:flex;gap:8px;margin:10px 0 0;justify-content:center;flex-wrap:wrap}
     .hint{margin-top:12px;font-size:13px;color:#4a5568;line-height:1.5}
@@ -41,12 +41,13 @@
       <button class="toolbtn" id="undoBtn" disabled>撤回</button>
       <button class="toolbtn" id="hintBtn">提示</button>
     </div>
-    <div class="hint">操作：<strong>长按</strong>手牌开始拖动（全程“吸附”到指针），<strong>点击</strong>手牌旋转；落子后立即补牌；支持<strong>撤回上一步</strong>。吸附预览为<strong>全局吸附</strong>：从选中到放下始终可见。</div>
+    <div class="hint">操作：<strong>长按</strong>手牌开始拖动（全程“遥控式”且 <strong>ghost</strong> 为落点基准），<strong>点击</strong>手牌旋转；落子后立即补牌；支持<strong>撤回上一步</strong>。棋盘内实体与 ghost <strong>完全重合</strong>，手指始终远离实体，避免遮挡。</div>
   </div>
+
 <script>
 (function(){
-  // ===== 环境开关（生产不挡屏，开发模式在 URL 后加 #dev 或 ?dev=1 才显示错误层） =====
-  const DEV = /(?:[#?].*\bdev=1\b)|(?:#.*\bdev\b)/i.test(location.href);
+  // ===== 开发错误叠加层（仅 dev 模式：#dev 或 ?dev=1） =====
+  const DEV = /(?:[#?].*\\bdev=1\\b)|(?:#.*\\bdev\\b)/i.test(location.href);
   window.onerror = function(msg, src, lineno, colno, err){
     if(!DEV){ try{ console.error(msg, src+':'+lineno+':'+colno, err); }catch(e){} return; }
     try{
@@ -55,8 +56,8 @@
       x.setTransform(1,0,0,1,0,0);
       x.fillStyle = 'rgba(0,0,0,0.65)'; x.fillRect(0,0,c.width,c.height);
       x.fillStyle = '#fff'; x.font = '14px monospace';
-      const text = (msg || 'Error') + '\n' + (err && err.stack ? err.stack : (src+':'+lineno+':'+colno));
-      const lines = text.split(/\n/).slice(0,12);
+      const text = (msg || 'Error') + '\\n' + (err && err.stack ? err.stack : (src+':'+lineno+':'+colno));
+      const lines = String(text).split(/\\n/).slice(0,12);
       lines.forEach((line,i)=> x.fillText(line, 12, 24 + i*18));
     }catch(e){}
   };
@@ -65,8 +66,8 @@
   const BOARD_SIZE=10, GAP=2, HAND_AREA_H=270;
   const CANVAS_W=420, CANVAS_H=820;
   const CELL_SCORE=10, LINE_SCORE=100, MULT_PER_STREAK=0.1;
-  const LONG_PRESS_MS=90; // 点击<90ms旋转，长按>=90ms吸附
-  const MOVE_SLOP=14;     // 更宽容
+  const LONG_PRESS_MS=90;         // <90ms 点击旋转；≥90ms 长按拖动
+  const MOVE_SLOP=14;
 
   const COLORS={ grid:'#c8d4e5', empty:'#e4eaf3', ghostOk:getComputedStyle(document.documentElement).getPropertyValue('--ghostOk'), ghostBad:getComputedStyle(document.documentElement).getPropertyValue('--ghostBad'), hint:getComputedStyle(document.documentElement).getPropertyValue('--hint'), bgTop:'#ffffff', bgBottom:'#eef3fb', lineFlash:'#9ed0ff' };
   const SHAPE_COLORS=[["#ff9a9e","#fad0c4"],["#a1c4fd","#c2e9fb"],["#fbc2eb","#a6c1ee"],["#ffecd2","#fcb69f"],["#ffdde1","#ee9ca7"],["#cfd9df","#e2ebf0"],["#d4fc79","#96e6a1"],["#84fab0","#8fd3f4"],["#fccb90","#d57eeb"],["#e0c3fc","#8ec5fc"],["#f093fb","#f5576c"]];
@@ -85,15 +86,15 @@
   const boardX=Math.floor((CANVAS_W-boardW)/2);
   const boardY=76; const boardH=boardW; const handY=boardY+boardH+16;
 
-  // 拖拽偏移策略：始终与手指保持距离；进入棋盘后，实体贴近 ghost 但仍略微远离手指
-  const FINGER_OFFSET_FOLLOW = { x: Math.round(cellSize*0.45), y: Math.round(cellSize*2.20) }; // 手指遥控距离更远，避免遮挡（非棋盘）
-  const NEAR_GHOST_SHIFT = Math.max(4, Math.round(cellSize*0.18)); // 棋盘内：实体与 ghost 的微小位移（沿着指向 ghost 的反方向）
+  // 遥控偏移（棋盘外较远）
+  const FINGER_OFFSET_OUT = { x: Math.round(cellSize*0.50), y: Math.round(cellSize*2.60) };
+  const FOLLOW_LERP = 0.28; // 跟随缓动，越大越“跟手”，越小越稳
 
   // ===== 状态 =====
-  let grid=Array.from({length:BOARD_SIZE},()=>Array(BOARD_SIZE).fill(0)); // 0空，其它：shapeId+1
+  let grid=Array.from({length:BOARD_SIZE},()=>Array(BOARD_SIZE).fill(0));
   let score=0, best=Number(localStorage.getItem('best')||0), streak=0;
-  let hand=[]; // 长度 3
-  let dragging=null; // {piece,x,y,index,homeX,homeY,cursorOffset}
+  let hand=[]; // 3
+  let dragging=null; // {piece,x,y,index,homeX,homeY,cursorOffset,renderX,renderY}
   let gameOver=false;
   let lastCleared=null, flashTimer=0;
   let returnAnim=null, spawnAnim=[null,null,null], particles=[];
@@ -148,11 +149,16 @@
 
   function handSlotPose(i){ const slotW=Math.floor((CANVAS_W-32-2*16)/3); const sx=16+i*(slotW+16), sy=handY; return {x:sx+14,y:sy+16,scale:Math.min(1,(slotW-28)/(cellSize*3)),homeX:sx+14,homeY:sy+16}; }
 
-  // 全局吸附：无论指针在哪，都返回夹紧到棋盘内部的锚点
-  function snapToBoardClamped(px,py,piece){ if(!isPiece(piece)) return {r:0,c:0}; const bb=bbox(piece); const relX=px-(boardX+GAP)+(bb.minC*(cellSize+GAP)); const relY=py-(boardY+GAP)+(bb.minR*(cellSize+GAP)); let c=Math.floor(relX/(cellSize+GAP)); let r=Math.floor(relY/(cellSize+GAP)); c=Math.max(0,Math.min(c,BOARD_SIZE-bb.w)); r=Math.max(0,Math.min(r,BOARD_SIZE-bb.h)); return {r,c}; }
+  function snapToBoardClamped(px,py,piece){
+    if(!isPiece(piece)) return {r:0,c:0};
+    const bb=bbox(piece);
+    const relX=px-(boardX+GAP)+(bb.minC*(cellSize+GAP));
+    const relY=py-(boardY+GAP)+(bb.minR*(cellSize+GAP));
+    let c=Math.floor(relX/(cellSize+GAP)); let r=Math.floor(relY/(cellSize+GAP));
+    c=Math.max(0,Math.min(c,BOARD_SIZE-bb.w)); r=Math.max(0,Math.min(r,BOARD_SIZE-bb.h));
+    return {r,c};
+  }
   function isOverBoard(px,py){ return px>=boardX && px<=boardX+boardW && py>=boardY && py<=boardY+boardH; }
-
-  // 判断是否在交互区（仅棋盘或手牌槽位），其余区域不拦截 Safari 手势
   function isInInteractiveZones(x,y){
     if(isOverBoard(x,y)) return true;
     const slotW=Math.floor((CANVAS_W-32-2*16)/3);
@@ -165,51 +171,70 @@
   function drawParticles(){ for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.x+=p.vx; p.y+=p.vy; p.vy+=0.05; p.life--; ctx.globalAlpha=Math.max(0,p.life/30); ctx.fillStyle='#ffd54f'; roundRect(p.x,p.y,3,3,1); if(p.life<=0) particles.splice(i,1); } ctx.globalAlpha=1; }
 
   // ===== 渲染循环 =====
-  function draw(){ const g=ctx.createLinearGradient(0,0,0,CANVAS_H); g.addColorStop(0,COLORS.bgTop); g.addColorStop(1,COLORS.bgBottom); ctx.fillStyle=g; ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
+  function draw(){
+    const g=ctx.createLinearGradient(0,0,0,CANVAS_H); g.addColorStop(0,COLORS.bgTop); g.addColorStop(1,COLORS.bgBottom); ctx.fillStyle=g; ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
     ctx.fillStyle=COLORS.grid; roundRect(boardX,boardY,boardW,boardH,18);
-    for(let r=0;r<BOARD_SIZE;r++) for(let c=0;c<BOARD_SIZE;c++){ const x=boardX+GAP+c*(cellSize+GAP), y=boardY+GAP+r*(cellSize+GAP); if(grid[r][c]!==0){ const shapeIdx=grid[r][c]-1; fillTile(x,y, SHAPE_COLORS[shapeIdx%SHAPE_COLORS.length]); } else { ctx.fillStyle=COLORS.empty; roundRect(x,y,cellSize,cellSize,7);} }
+    for(let r=0;r<BOARD_SIZE;r++) for(let c=0;c<BOARD_SIZE;c++){
+      const x=boardX+GAP+c*(cellSize+GAP), y=boardY+GAP+r*(cellSize+GAP);
+      if(grid[r][c]!==0){ const shapeIdx=grid[r][c]-1; fillTile(x,y, SHAPE_COLORS[shapeIdx%SHAPE_COLORS.length]); }
+      else { ctx.fillStyle=COLORS.empty; roundRect(x,y,cellSize,cellSize,7);}
+    }
 
-    if(lastCleared&&flashTimer>0){ ctx.fillStyle=COLORS.lineFlash; const a=flashTimer/10; ctx.globalAlpha=a; for(const rr of lastCleared.rows){ const y=boardY+GAP+rr*(cellSize+GAP)-GAP/2; roundRect(boardX+GAP/2,y,boardW-GAP,cellSize+GAP,10);} for(const cc of lastCleared.cols){ const x=boardX+GAP+cc*(cellSize+GAP)-GAP/2; roundRect(x,boardY+GAP/2,cellSize+GAP,boardH-GAP,10);} ctx.globalAlpha=1; flashTimer--; }
+    if(lastCleared&&flashTimer>0){
+      ctx.fillStyle=COLORS.lineFlash; const a=flashTimer/10; ctx.globalAlpha=a;
+      for(const rr of lastCleared.rows){ const y=boardY+GAP+rr*(cellSize+GAP)-GAP/2; roundRect(boardX+GAP/2,y,boardW-GAP,cellSize+GAP,10);}
+      for(const cc of lastCleared.cols){ const x=boardX+GAP+cc*(cellSize+GAP)-GAP/2; roundRect(x,boardY+GAP/2,cellSize+GAP,boardH-GAP,10);}
+      ctx.globalAlpha=1; flashTimer--;
+    }
 
-    const slotW=Math.floor((CANVAS_W-32-2*16)/3); for(let i=0;i<3;i++){ const sx=16+i*(slotW+16), sy=handY; ctx.fillStyle='#e5ebf6'; roundRect(sx,sy,slotW,HAND_AREA_H-34,16); }
+    const slotW=Math.floor((CANVAS_W-32-2*16)/3);
+    for(let i=0;i<3;i++){ const sx=16+i*(slotW+16), sy=handY; ctx.fillStyle='#e5ebf6'; roundRect(sx,sy,slotW,HAND_AREA_H-34,16); }
 
-    for(let i=0;i<3;i++){ const p=hand[i]; if(!isPiece(p)) continue; if(dragging && dragging.index===i) continue; const pose=handSlotPose(i); let sc=pose.scale; if(spawnAnim[i]){ spawnAnim[i].t=Math.min(1,spawnAnim[i].t+0.14); const t=spawnAnim[i].t; const overshoot=1.12; sc=pose.scale*(1+(overshoot-1)*(1-Math.pow(1-t,3))); if(t>=1) spawnAnim[i]=null; } drawPieceAt(p,pose.x,pose.y,sc); }
+    // 手牌（非拖拽中的）
+    for(let i=0;i<3;i++){
+      const p=hand[i]; if(!isPiece(p)) continue; if(dragging && dragging.index===i) continue;
+      const pose=handSlotPose(i); let sc=pose.scale;
+      if(spawnAnim[i]){ spawnAnim[i].t=Math.min(1,spawnAnim[i].t+0.14); const t=spawnAnim[i].t; const overshoot=1.12; sc=pose.scale*(1+(overshoot-1)*(1-Math.pow(1-t,3))); if(t>=1) spawnAnim[i]=null; }
+      drawPieceAt(p,pose.x,pose.y,sc);
+    }
 
+    // 返回动画
     if(returnAnim){
-      const t=Math.min(1, (returnAnim.t += 0.10));
+      const t=Math.min(1, (returnAnim.t += 0.12));
       const e=1-Math.pow(1-t,3);
       const x=lerp(returnAnim.fromX,returnAnim.toX,e);
       const y=lerp(returnAnim.fromY,returnAnim.toY,e);
-      const scale=1 + 0.10 * (1-e) * e * 4;
-      drawPieceAt(returnAnim.piece,x,y,scale);
+      drawPieceAt(returnAnim.piece,x,y,1);
       if(t>=1) returnAnim=null;
     }
 
+    // 拖拽渲染：ghost 吸附；棋盘内实体==ghost；棋盘外实体与手指保持较远距离
     if(dragging && isPiece(dragging.piece)){
-      // 用 ghost 确认落点：始终画在棋盘吸附位置
       const a=snapToBoardClamped(dragging.x,dragging.y,dragging.piece);
       const ok=canPlace(dragging.piece,a.r,a.c);
       drawPieceGrid(dragging.piece,a.r,a.c, ok?COLORS.ghostOk:COLORS.ghostBad);
 
-      // 实体方块：
-      // - 进入棋盘：与 ghost 贴近，但相对手指沿反方向轻移 NEAR_GHOST_SHIFT，保证“始终远离手指”
-      // - 不在棋盘：相对手指保持较大偏移，完全不遮挡
+      // ghost 像素锚点（按棋子左上角）
+      const minR=Math.min(...dragging.piece.cells.map(c=>c.r));
+      const minC=Math.min(...dragging.piece.cells.map(c=>c.c));
+      const ghostX=boardX+GAP+a.c*(cellSize+GAP)-minC*(cellSize+GAP);
+      const ghostY=boardY+GAP+a.r*(cellSize+GAP)-minR*(cellSize+GAP);
+
+      let targetX, targetY;
       if(isOverBoard(dragging.x,dragging.y)){
-        const minR=Math.min(...dragging.piece.cells.map(c=>c.r));
-        const minC=Math.min(...dragging.piece.cells.map(c=>c.c));
-        const px0=boardX+GAP+a.c*(cellSize+GAP)-minC*(cellSize+GAP);
-        const py0=boardY+GAP+a.r*(cellSize+GAP)-minR*(cellSize+GAP);
-        const bb2=bbox(dragging.piece);
-        const pieceW2=bb2.w*(cellSize+GAP)-GAP, pieceH2=bb2.h*(cellSize+GAP)-GAP;
-        const cx=px0 + pieceW2/2, cy=py0 + pieceH2/2;
-        let dx=cx-dragging.x, dy=cy-dragging.y; const len=Math.hypot(dx,dy)||1; dx/=len; dy/=len;
-        const px=px0 + (-dx)*NEAR_GHOST_SHIFT; const py=py0 + (-dy)*NEAR_GHOST_SHIFT;
-        drawPieceAt(dragging.piece, px, py, 1);
+        // 棋盘内：实体与 ghost 完全重合
+        targetX = ghostX; targetY = ghostY;
       } else {
+        // 棋盘外：相对手指的左上偏移（远离手指，避免遮挡）
         const bb=bbox(dragging.piece); const pxW=bb.w*(cellSize+GAP)-GAP; const pxH=bb.h*(cellSize+GAP)-GAP;
-        const fx=dragging.x-Math.floor(pxW/2)-FINGER_OFFSET_FOLLOW.x; const fy=dragging.y-Math.floor(pxH/2)-FINGER_OFFSET_FOLLOW.y;
-        drawPieceAt(dragging.piece,fx,fy,1);
+        targetX = dragging.x - Math.floor(pxW/2) - FINGER_OFFSET_OUT.x;
+        targetY = dragging.y - Math.floor(pxH/2) - FINGER_OFFSET_OUT.y;
       }
+
+      if(dragging.renderX==null || dragging.renderY==null){ dragging.renderX=targetX; dragging.renderY=targetY; }
+      else { dragging.renderX=lerp(dragging.renderX,targetX,FOLLOW_LERP); dragging.renderY=lerp(dragging.renderY,targetY,FOLLOW_LERP); }
+
+      ctx.globalAlpha=0.98; drawPieceAt(dragging.piece, dragging.renderX, dragging.renderY, 1); ctx.globalAlpha=1;
     }
 
     if(hintTarget && Date.now()<hintExpire){ const {piece,r,c}=hintTarget; ctx.globalAlpha=0.85+0.15*Math.sin(Date.now()/120); drawPieceGrid(piece,r,c,COLORS.hint); ctx.globalAlpha=1; } else { hintTarget=null; }
@@ -223,16 +248,18 @@
 
   // ===== 交互：长按拖动 / 点击旋转 =====
   function hitHand(x,y){ const slotW=Math.floor((CANVAS_W-32-2*16)/3); for(let i=0;i<3;i++){ const sx=16+i*(slotW+16), sy=handY; if(x>=sx && x<=sx+slotW && y>=sy && y<=sy+HAND_AREA_H){ const pose=handSlotPose(i); return {index:i,toX:pose.homeX,toY:pose.homeY}; } } return null; }
-
-  function beginDragFromPress(slot,p){ const i=slot.index; if(!isPiece(hand[i])) return; const bb=bbox(hand[i]); const pxW=bb.w*(cellSize+GAP)-GAP, pxH=bb.h*(cellSize+GAP)-GAP; dragging={piece:clonePiece(hand[i]),x:p.x,y:p.y,index:i,homeX:slot.toX,homeY:slot.toY,cursorOffset:{dx:Math.floor(pxW/2),dy:Math.floor(pxH/2)}}; }
+  function beginDragFromPress(slot,p){
+    const i=slot.index; if(!isPiece(hand[i])) return; const bb=bbox(hand[i]); const pxW=bb.w*(cellSize+GAP)-GAP, pxH=bb.h*(cellSize+GAP)-GAP;
+    dragging={piece:clonePiece(hand[i]),x:p.x,y:p.y,index:i,homeX:slot.toX,homeY:slot.toY,cursorOffset:{dx:Math.floor(pxW/2),dy:Math.floor(pxH/2)},renderX:null,renderY:null};
+  }
   function startPress(slot,p){ clearPress(); pressSlot=slot; pressStart=Date.now(); pressStartPos=p; pressTimer=setTimeout(()=>{ if(!pressSlot) return; beginDragFromPress(pressSlot,{x:p.x,y:p.y}); clearPress(); },LONG_PRESS_MS); }
   function clearPress(){ if(pressTimer){ clearTimeout(pressTimer); pressTimer=null; } pressSlot=null; pressStart=0; pressStartPos=null; }
 
-  function onPointerDown(evt){ if(gameOver) return; const p=getPointerPos(evt); const slot=hitHand(p.x,p.y); const inZones = isInInteractiveZones(p.x,p.y); if(slot){ startPress(slot,p); addDocDragListeners(); if(inZones) evt.preventDefault(); } else if (inZones){ addDocDragListeners(); evt.preventDefault(); } }
+  function onPointerDown(evt){ if(gameOver) return; const p=getPointerPos(evt); const slot=hitHand(p.x,p.y); const inZones = isInInteractiveZones(p.x,p.y); if(slot){ startPress(slot,p); addDocDragListeners(); if(inZones && evt.cancelable) evt.preventDefault(); } else if (inZones){ addDocDragListeners(); if(evt.cancelable) evt.preventDefault(); } }
   function onPointerMove(evt){ const p=getPointerPos(evt);
     if(pressSlot && pressStart){ const elapsed=Date.now()-pressStart; if(elapsed>=LONG_PRESS_MS){ beginDragFromPress(pressSlot,p); clearPress(); }
       else if(Math.hypot(p.x-pressStartPos.x,p.y-pressStartPos.y) > MOVE_SLOP*1.2){ clearPress(); } }
-    if(dragging){ dragging.x=p.x; dragging.y=p.y; if(isInInteractiveZones(p.x,p.y)) evt.preventDefault(); }
+    if(dragging){ dragging.x=p.x; dragging.y=p.y; if(isInInteractiveZones(p.x,p.y) && evt.cancelable) evt.preventDefault(); }
   }
   function onPointerUp(evt){ const p=getPointerPos(evt);
     const inZones = isInInteractiveZones(p.x,p.y);
@@ -241,26 +268,24 @@
         const cleared=clearLines(); const gain=calcGain(dragging.piece.cells.length,cleared.rows.length,cleared.cols.length); score+=gain; if(cleared.rows.length+cleared.cols.length>0){ streak++; lastCleared=cleared; flashTimer=10; emitClearParticles(cleared.rows,cleared.cols);} else { streak=0; }
         hand[dragging.index]=randPiece(); spawnAnim[dragging.index]={t:0}; dragging=null; if(!anyPlacementPossible(hand)){ gameOver=true; best=Math.max(best,score); localStorage.setItem('best',String(best)); }
         updateHUD();
-      } else { returnAnim={piece:clonePiece(dragging.piece),fromX:dragging.x-16,fromY:dragging.y-16,toX:dragging.homeX,toY:dragging.homeY,t:0}; dragging=null; }
-      if(inZones) evt.preventDefault(); removeDocDragListeners(); return; }
+      } else { returnAnim={piece:clonePiece(dragging.piece),fromX:(dragging.renderX??(p.x-16)),fromY:(dragging.renderY??(p.y-16)),toX:handSlotPose(pressSlot?pressSlot.index:0).homeX,toY:handSlotPose(pressSlot?pressSlot.index:0).homeY,t:0}; dragging=null; }
+      if(inZones && evt.cancelable) evt.preventDefault(); removeDocDragListeners(); return; }
     // 点击旋转
     if(pressSlot && Date.now()-pressStart < LONG_PRESS_MS){ const i=pressSlot.index; if(isPiece(hand[i])){ hand[i]=rotatePiece(hand[i]); spawnAnim[i]={t:0}; updateHUD(); } }
-    clearPress(); if(inZones) evt.preventDefault(); removeDocDragListeners(); }
+    clearPress(); if(inZones && evt.cancelable) evt.preventDefault(); removeDocDragListeners(); }
 
   function pushHistory(){ const snapshot={ grid:grid.map(r=>r.slice()), score, streak, hand:hand.map(clonePiece) }; history.push(snapshot); if(history.length>UNDO_LIMIT) history.shift(); document.getElementById('undoBtn').disabled=false; }
   function undo(){ if(history.length===0) return; const s=history.pop(); grid=s.grid.map(r=>r.slice()); score=s.score; streak=s.streak; hand=s.hand.map(clonePiece); gameOver=false; dragging=null; returnAnim=null; hintTarget=null; hintExpire=0; updateHUD(); if(history.length===0) document.getElementById('undoBtn').disabled=true; }
 
-  // 绑定（并扩展到 document，支持从底部拖到顶部跨区域连续跟踪）
+  // 绑定（并扩展到 document，支持跨区域跟踪）
   cvs.addEventListener('mousedown', onPointerDown);
   cvs.addEventListener('mousemove', onPointerMove);
   window.addEventListener('mouseup', onPointerUp);
-  cvs.addEventListener('mouseleave', ()=>{ clearPress(); if(dragging){ returnAnim={piece:clonePiece(dragging.piece),fromX:dragging.x-16,fromY:dragging.y-16,toX:dragging.homeX,toY:dragging.homeY,t:0}; dragging=null; } removeDocDragListeners(); });
-
+  cvs.addEventListener('mouseleave', ()=>{ clearPress(); if(dragging){ returnAnim={piece:clonePiece(dragging.piece),fromX:(dragging.renderX??0),fromY:(dragging.renderY??0),toX:dragging.homeX,toY:dragging.homeY,t:0}; dragging=null; } removeDocDragListeners(); });
   cvs.addEventListener('touchstart', onPointerDown, {passive:false});
   cvs.addEventListener('touchmove', onPointerMove, {passive:false});
   cvs.addEventListener('touchend', onPointerUp, {passive:false});
-  cvs.addEventListener('touchcancel', ()=>{ clearPress(); if(dragging){ returnAnim={piece:clonePiece(dragging.piece),fromX:dragging.x-16,fromY:dragging.y-16,toX:dragging.homeX,toY:dragging.homeY,t:0}; dragging=null; } removeDocDragListeners(); }, {passive:false});
-
+  cvs.addEventListener('touchcancel', ()=>{ clearPress(); if(dragging){ returnAnim={piece:clonePiece(dragging.piece),fromX:(dragging.renderX??0),fromY:(dragging.renderY??0),toX:dragging.homeX,toY:dragging.homeY,t:0}; dragging=null; } removeDocDragListeners(); }, {passive:false});
   function addDocDragListeners(){ document.addEventListener('mousemove', onPointerMove, {passive:false}); document.addEventListener('mouseup', onPointerUp, {passive:false}); document.addEventListener('touchmove', onPointerMove, {passive:false}); document.addEventListener('touchend', onPointerUp, {passive:false}); }
   function removeDocDragListeners(){ document.removeEventListener('mousemove', onPointerMove); document.removeEventListener('mouseup', onPointerUp); document.removeEventListener('touchmove', onPointerMove); document.removeEventListener('touchend', onPointerUp); }
 
@@ -269,40 +294,39 @@
   document.getElementById('undoBtn').addEventListener('click', ()=>undo());
   document.getElementById('hintBtn').addEventListener('click', ()=>{ if(gameOver) return; for(let i=0;i<3;i++) if(isPiece(hand[i])){ for(let r=0;r<BOARD_SIZE;r++) for(let c=0;c<BOARD_SIZE;c++){ if(canPlace(hand[i],r,c)){ hintTarget={piece:hand[i],r,c}; hintExpire=Date.now()+2000; return; } } } });
 
-  // 自检（控制台） —— 保留原有用例，并新增边界快测
+  // ===== 自检（在控制台输出，不影响运行） =====
   (function tests(){
-    const ok=n=>console.log('%c✓ '+n,'color:#2e7d32');
-    const ng=(n,e)=>console.error('%c✗ '+n,'color:#b00020',e);
-    const assert=(n,f)=>{try{if(!f()) throw 0; ok(n);}catch(e){ng(n,e);} };
+    const ok=n=>console.log('%c✓ '+n,'color:#2e7d32'); const ng=(n,e)=>console.error('%c✗ '+n,'color:#b00020',e);
+    const assert=(n,f)=>{try{if(!f()) throw 0; ok(n);}catch(e){ng(n,e);}};
 
-    // 保留：初始三张
     hand=dealHand(); assert('initial 3 pieces', ()=> hand.filter(isPiece).length===3);
-
-    // 保留：旋转 4 次回原形
     const key=p=>p.cells.map(({r,c})=>r+','+c).sort().join('|');
     const a=clonePiece(PIECES[9]); let b=rotatePiece(a); b=rotatePiece(b); b=rotatePiece(b); b=rotatePiece(b);
     assert('rotate x4 same', ()=> key(a)===key(b));
-
-    // 保留：撤回还原棋盘
     const g0=grid.map(r=>r.slice()); pushHistory(); grid[0][0]=1; undo();
     assert('undo restores grid', ()=> JSON.stringify(grid)===JSON.stringify(g0));
 
-    // 新增：snapToBoardClamped 总在界内
-    const outSnap=snapToBoardClamped(-999,-999, clonePiece(PIECES[0]));
-    assert('snap clamps inside board', ()=> outSnap.r>=0 && outSnap.c>=0 && outSnap.r<BOARD_SIZE && outSnap.c<BOARD_SIZE);
+    // 棋盘内：实体应与 ghost 重合（误差<2px）
+    (function(){
+      const fake={piece:clonePiece(PIECES[0]),x:boardX+boardW/2,y:boardY+boardH/2,index:0,homeX:0,homeY:0};
+      dragging={...fake,renderX:null,renderY:null};
+      const s=snapToBoardClamped(fake.x,fake.y,fake.piece);
+      const minR=Math.min(...fake.piece.cells.map(c=>c.r)); const minC=Math.min(...fake.piece.cells.map(c=>c.c));
+      const gx=boardX+GAP+s.c*(cellSize+GAP)-minC*(cellSize+GAP);
+      const gy=boardY+GAP+s.r*(cellSize+GAP)-minR*(cellSize+GAP);
+      dragging.renderX=gx; dragging.renderY=gy;
+      assert('entity overlaps ghost on board', ()=> Math.abs(dragging.renderX-gx)<2 && Math.abs(dragging.renderY-gy)<2);
+      dragging=null;
+    })();
 
-    // 新增：getPointerPos 在 touchend 事件不抛错
-    const fakeRect = {left:0, top:0, width:CANVAS_W, height:CANVAS_H};
-    const _getBoundingClientRect = cvs.getBoundingClientRect.bind(cvs);
-    cvs.getBoundingClientRect = ()=>fakeRect; // stub
-    try{
-      const p1 = getPointerPos({changedTouches:[{clientX:10, clientY:20}]});
-      assert('getPointerPos with changedTouches', ()=> typeof p1.x==='number' && typeof p1.y==='number');
-      // 新增：确保 NEAR_GHOST_SHIFT 小于一格，保证“贴近 ghost”
-      assert('NEAR_GHOST_SHIFT < 1 cell', ()=> NEAR_GHOST_SHIFT < (cellSize+GAP));
-    } finally {
-      cvs.getBoundingClientRect = _getBoundingClientRect; // restore
-    }
+    // 棋盘外：实体与手指有较大距离
+    (function(){
+      const OUTX=boardX-40, OUTY=boardY-40; const bb=bbox(PIECES[0]);
+      const pxW=bb.w*(cellSize+GAP)-GAP, pxH=bb.h*(cellSize+GAP)-GAP;
+      const targetX=OUTX - Math.floor(pxW/2) - FINGER_OFFSET_OUT.x;
+      const targetY=OUTY - Math.floor(pxH/2) - FINGER_OFFSET_OUT.y;
+      assert('entity far from finger off board', ()=> Math.hypot((OUTX-targetX),(OUTY-targetY)) > cellSize*1.1);
+    })();
   })();
 
   reset(); requestAnimationFrame(draw);
@@ -310,11 +334,11 @@
 </script>
 
 <script>
-// ====== PWA 注册（清理旧 SW，注册 sw-v9.js） ======
+// PWA 注册（统一指向 sw-v11.js）
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', async () => {
     try { const regs = await navigator.serviceWorker.getRegistrations(); await Promise.all(regs.map(r => r.unregister().catch(()=>{}))); } catch(e) {}
-    try { await navigator.serviceWorker.register('./sw-v9.js', {scope: './'}); } catch(e) { console.warn('SW register failed', e); }
+    try { await navigator.serviceWorker.register('./sw-v11.js', {scope: './'}); } catch(e) { console.warn('SW register failed', e); }
   });
 }
 </script>
