@@ -299,10 +299,18 @@
 </script>
 
 <script>
-// ====== PWA 注册（若 sw.js 已放在同目录，自动注册；不生成文件） ======
+// ====== PWA 注册（强制切到新版本并清理旧缓存的 SW） ======
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(console.warn);
+  window.addEventListener('load', async () => {
+    try {
+      // 1) 先注销所有旧的 SW，避免老 SW 继续 cache-first 顶住旧 index.html
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister().catch(()=>{})));
+    } catch(e) { console.warn('unregister sw failed', e); }
+    try {
+      // 2) 注册一个“新文件名”的 SW（例如 sw-v5.js），确保绕过旧缓存
+      await navigator.serviceWorker.register('./sw-v5.js', {scope: './'});
+    } catch(e) { console.warn('register sw-v5 failed', e); }
   });
 }
 </script>
