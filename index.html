@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=yes, viewport-fit=cover" />
-  <title>Block Blast · 极简Ghost版（远离手指 / 松手就放 / 下滑取消修复 / 高对比底色）</title>
+  <title>Block Blast · 极简Ghost版（全屏移动 / 边界容差修复 / 回位动画 / 渐隐消除）</title>
   <style>
     :root {
       --bg1:#fdfdfd;
       --bg2:#eef3fb;
       --grid:#b7c6e3;           /* 稍深的网格描边，提高对比 */
-      --cellEmpty:#f2f7ff;      /* ✅ 取消灰，改成浅蓝白，更清晰 */
+      --cellEmpty:#f2f7ff;      /* 更清晰的空格底色 */
       --ink:#102032;
       --ghostOk:rgba(102,166,255,.40);
       --ghostBad:rgba(239,91,91,.40);
@@ -39,7 +39,7 @@
     <div class="toolbar">
       <button class="toolbtn" id="undoBtn" disabled>撤回</button>
     </div>
-    <div class="hint">操作：手牌<strong>长按开始拖动</strong>（方块远离手指）、<strong>点击旋转</strong>；ghost 绿色=可放，<strong>松手即落</strong>；向下<strong>明显下滑</strong>才会取消。</div>
+    <div class="hint">操作：手牌<strong>长按开始拖动</strong>（远离手指、1:1 跟手）、<strong>点击旋转</strong>；可在<strong>整个屏幕</strong>移动；ghost 绿色=可放，<strong>松手即落</strong>；否则<strong>自动回位</strong>；明显下滑<strong>取消</strong>；消除行/列<strong>线性渐隐</strong>。</div>
   </div>
 
 <script>
@@ -67,23 +67,26 @@
   const LONG_PRESS_MS=90; // <90ms 点击旋转；≥90ms 长按拖动
   const MOVE_SLOP=14;
 
-  // 手指→ghost 的远离偏移（稳定不抖）
-  const GHOST_FAR_OFFSET = { x: 0, y: 140 };
-  // 方块与 ghost 的小重叠（保持视觉近）
-  const PIECE_OVERLAP = { x: 10, y: 10 };
+  // 偏移与动画
+  const GHOST_FAR_OFFSET = { x: 0, y: 140 }; // 锚点（用于对齐）相对手指的偏移
+  const FREE_MOVE_OFFSET = { x: 0, y: 84 };  // 自由移动时方块相对手指的可见偏移
+  const PIECE_OVERLAP = { x: 10, y: 10 };    // 与 ghost 的微重叠
 
-  // ✅ 取消阈值（避免误触）：需要同时满足“在下半区”且“下滑位移达到阈值”
-  const CANCEL_ZONE_Y = CANVAS_H * 0.60;  // 位置阈值
-  const CANCEL_DRAG_DY = 160;             // 位移阈值（明显下滑）
-  const CANCEL_ANIM_MS = 140;             // 回位动画
+  // 下滑取消
+  const CANCEL_ZONE_Y = CANVAS_H * 0.60;
+  const CANCEL_DRAG_DY = 160;
+  const CANCEL_ANIM_MS = 140;
   const CANCEL_HINT_H = 110;
 
-  // 渐隐消除参数（线性、不变速）
+  // 渐隐消除（线性）
   const CLEAR_FADE_MS = 220;
+
+  // ✅ 边界容差（修复上边界 ghost 偶发不显示）
+  const EPS = 30e-1;
 
   const COLORS={
     grid:getCss('--grid'),
-    empty:getCss('--cellEmpty'),   // ✅ 使用更清晰底色
+    empty:getCss('--cellEmpty'),
     ghostOk:getCss('--ghostOk'),
     ghostBad:getCss('--ghostBad'),
     bgTop:'#ffffff',
@@ -118,7 +121,6 @@
   let dragging=null;
   let gameOver=false;
   let returnAnim=null; // {t0,dur,fromX,fromY,toX,toY,piece}
-  let spawnAnim=[null,null,null];
   const history=[]; const UNDO_LIMIT=20;
   let clearAnim=null; // {t0,dur, rows, cols}
 
@@ -162,7 +164,7 @@
   function calcGain(placedCells,rows,cols){ const base=placedCells*CELL_SCORE; const lines=rows+cols; const bonus=lines*LINE_SCORE+Math.max(0,lines-1)*50; const mult=1+Math.min(streak,5)*MULT_PER_STREAK; return Math.floor((base+bonus)*mult); }
 
   function updateHUD(){ qs('#score').textContent=score; qs('#best').textContent=best; qs('#streak').textContent=streak; qs('#undoBtn').disabled=history.length===0||gameOver; }
-  function reset(){ grid=Array.from({length:BOARD_SIZE},()=>Array(BOARD_SIZE).fill(0)); score=0; streak=0; gameOver=false; hand=dealHand(); spawnAnim=[{t:0},{t:0},{t:0}]; dragging=null; clearAnim=null; returnAnim=null; history.length=0; updateHUD(); }
+  function reset(){ grid=Array.from({length:BOARD_SIZE},()=>Array(BOARD_SIZE).fill(0)); score=0; streak=0; gameOver=false; hand=dealHand(); dragging=null; clearAnim=null; returnAnim=null; history.length=0; updateHUD(); }
   function qs(sel){ return document.querySelector(sel); }
 
   // ===== 绘制基础 =====
@@ -198,26 +200,46 @@
   }
 
   function handSlotPose(i){ const slotW=Math.floor((CANVAS_W-32-2*16)/3); const sx=16+i*(slotW+16), sy=handY; return {x:sx+14,y:sy+16,scale:Math.min(1,(slotW-28)/(cellSize*3)),homeX:sx+14,homeY:sy+16,slotW}; }
-  function isOverBoard(px,py){ return px>=boardX && px<=boardX+boardW && py>=boardY && py<=boardY+boardH; }
-  function snapToBoard(px,py,piece){
+
+  // ---------- 关键修复：连续坐标 + EPS 容差 ----------
+  // 原先用 Math.floor 后判断边界，浮点误差会让刚回到上边界时 r=-1。
+  // 现在先用连续坐标判断是否在可放范围，再在需要对齐时 floor+clamp。
+  function rawSnapContinuous(anchorX, anchorY, piece){
     const bb=bbox(piece);
-    const relX=px-(boardX+GAP)+(bb.minC*(cellSize+GAP));
-    const relY=py-(boardY+GAP)+(bb.minR*(cellSize+GAP));
-    let c=Math.floor(relX/(cellSize+GAP));
-    let r=Math.floor(relY/(cellSize+GAP));
-    c=Math.max(0,Math.min(c,BOARD_SIZE-bb.w));
+    const relX=anchorX-(boardX+GAP)+(bb.minC*(cellSize+GAP));
+    const relY=anchorY-(boardY+GAP)+(bb.minR*(cellSize+GAP));
+    const cF = relX/(cellSize+GAP);
+    const rF = relY/(cellSize+GAP);
+    return {rF,cF,bb};
+  }
+  function isAnchorInBoard(anchorX, anchorY, piece){
+    const {rF,cF,bb}=rawSnapContinuous(anchorX, anchorY, piece);
+    return (rF >= -EPS) && (cF >= -EPS)
+        && (rF <= BOARD_SIZE - bb.h + EPS)
+        && (cF <= BOARD_SIZE - bb.w + EPS);
+  }
+  function snapToBoard(anchorX, anchorY, piece){
+    const {rF,cF,bb}=rawSnapContinuous(anchorX, anchorY, piece);
+    let r=Math.floor(rF + EPS);
+    let c=Math.floor(cF + EPS);
     r=Math.max(0,Math.min(r,BOARD_SIZE-bb.h));
+    c=Math.max(0,Math.min(c,BOARD_SIZE-bb.w));
     return {r,c};
   }
+  // ----------------------------------------------------
 
   function currentPiecePixel(d){
     const anchorX = d.x - GHOST_FAR_OFFSET.x;
     const anchorY = d.y - GHOST_FAR_OFFSET.y;
-    const bb=bbox(d.piece); const minR=bb.minR, minC=bb.minC;
-    const snap=snapToBoard(anchorX, anchorY, d.piece);
-    const ghostX=boardX+GAP+snap.c*(cellSize+GAP)-minC*(cellSize+GAP);
-    const ghostY=boardY+GAP+snap.r*(cellSize+GAP)-minR*(cellSize+GAP);
-    return { px: Math.round(ghostX + PIECE_OVERLAP.x), py: Math.round(ghostY + PIECE_OVERLAP.y) };
+    if(isAnchorInBoard(anchorX,anchorY,d.piece)){
+      const bb=bbox(d.piece); const minR=bb.minR, minC=bb.minC;
+      const snap=snapToBoard(anchorX, anchorY, d.piece);
+      const ghostX=boardX+GAP+snap.c*(cellSize+GAP)-minC*(cellSize+GAP);
+      const ghostY=boardY+GAP+snap.r*(cellSize+GAP)-minR*(cellSize+GAP);
+      return { px: Math.round(ghostX + PIECE_OVERLAP.x), py: Math.round(ghostY + PIECE_OVERLAP.y) };
+    }else{
+      return { px: d.x - FREE_MOVE_OFFSET.x, py: d.y - FREE_MOVE_OFFSET.y };
+    }
   }
 
   // ===== 主循环 =====
@@ -243,7 +265,7 @@
         if(fading && (fadeRows.includes(r) || fadeCols.includes(c))) a=fadeAlpha;
         drawTileCell(r,c,a);
       }else{
-        ctx.fillStyle=COLORS.empty;  // ✅ 使用更清晰的底色
+        ctx.fillStyle=COLORS.empty;
         roundRect(x,y,cellSize,cellSize,7);
       }
     }
@@ -263,7 +285,6 @@
     const showCancelBar = !!dragging || !!returnAnim;
     if(showCancelBar){
       const barY = CANVAS_H - CANCEL_HINT_H;
-      // 进入位置阈值 + 达到下滑阈值时高亮
       const highlight = dragging && (dragging.y >= CANCEL_ZONE_Y) && (dragging.y - dragging.startY >= CANCEL_DRAG_DY);
       ctx.globalAlpha = highlight ? 0.95 : 0.55;
       ctx.fillStyle = 'rgba(20,24,44,0.80)';
@@ -275,29 +296,36 @@
       ctx.globalAlpha = 1;
     }
 
-    // 拖拽时：ghost + 实体
+    // 拖拽时：在“可放范围内”才显示 ghost & 可落子；否则自由移动
     if(dragging && isPiece(dragging.piece)){
       const anchorX = dragging.x - GHOST_FAR_OFFSET.x;
       const anchorY = dragging.y - GHOST_FAR_OFFSET.y;
+      const inBoard = isAnchorInBoard(anchorX, anchorY, dragging.piece);
 
-      const snap=snapToBoard(anchorX, anchorY, dragging.piece);
-      const ok=canPlace(dragging.piece,snap.r,snap.c);
+      if(inBoard){
+        const snap=snapToBoard(anchorX, anchorY, dragging.piece);
+        const ok=canPlace(dragging.piece,snap.r,snap.c);
+        const bb=bbox(dragging.piece);
+        const minR=bb.minR, minC=bb.minC;
+        const ghostX=boardX+GAP+snap.c*(cellSize+GAP)-minC*(cellSize+GAP);
+        const ghostY=boardY+GAP+snap.r*(cellSize+GAP)-minR*(cellSize+GAP);
 
-      // 在取消过程的“下滑满足阈值”之前，仍显示 ghost
-      const meetsCancel = (dragging.y >= CANCEL_ZONE_Y) && ((dragging.y - dragging.startY) >= CANCEL_DRAG_DY);
-      if(!meetsCancel){
-        drawPieceGrid(dragging.piece,snap.r,snap.c, ok?COLORS.ghostOk:COLORS.ghostBad);
+        const meetsCancel = (dragging.y >= CANCEL_ZONE_Y) && ((dragging.y - dragging.startY) >= CANCEL_DRAG_DY);
+        if(!meetsCancel){
+          drawPieceGrid(dragging.piece,snap.r,snap.c, ok?COLORS.ghostOk:COLORS.ghostBad);
+        }
+
+        const px = Math.round(ghostX + PIECE_OVERLAP.x);
+        const py = Math.round(ghostY + PIECE_OVERLAP.y);
+        drawPieceAt(dragging.piece, px, py);
+
+        dragging.snapR=snap.r; dragging.snapC=snap.c; dragging.snapOK=ok;
+      }else{
+        const px = dragging.x - FREE_MOVE_OFFSET.x;
+        const py = dragging.y - FREE_MOVE_OFFSET.y;
+        drawPieceAt(dragging.piece, px, py);
+        dragging.snapOK=false;
       }
-
-      const bb=bbox(dragging.piece);
-      const minR=bb.minR, minC=bb.minC;
-      const ghostX=boardX+GAP+snap.c*(cellSize+GAP)-minC*(cellSize+GAP);
-      const ghostY=boardY+GAP+snap.r*(cellSize+GAP)-minR*(cellSize+GAP);
-      const px = Math.round(ghostX + PIECE_OVERLAP.x);
-      const py = Math.round(ghostY + PIECE_OVERLAP.y);
-      drawPieceAt(dragging.piece, px, py);
-
-      dragging.snapR=snap.r; dragging.snapC=snap.c; dragging.snapOK=ok;
     }
 
     // 回位动画
@@ -345,8 +373,8 @@
       x:p.x, y:p.y, index:i,
       homeX:slot.toX, homeY:slot.toY,
       snapR:0,snapC:0,snapOK:false,
-      startY:p.y,                 // ✅ 记录开始拖拽的 Y
-      startedAt:performance.now() // 备用：如需时间阈值
+      startY:p.y,
+      startedAt:performance.now()
     };
   }
 
@@ -359,12 +387,20 @@
     return { x: (cx-r.left)*(CANVAS_W/r.width), y: (cy-r.top)*(CANVAS_H/r.height) };
   }
 
+  function startReturnToHome(pieceState){
+    const i = pieceState.index;
+    const home = handSlotPose(i);
+    const {px,py} = currentPiecePixel(pieceState);
+    returnAnim = {
+      t0: performance.now(), dur: CANCEL_ANIM_MS,
+      fromX: px, fromY: py, toX: home.homeX, toY: home.homeY,
+      piece: clonePiece(pieceState.piece)
+    };
+  }
+
   function triggerCancel(){
     if(!dragging) return;
-    const i = dragging.index;
-    const home = handSlotPose(i);
-    const {px,py} = currentPiecePixel(dragging);
-    returnAnim = { t0: performance.now(), dur: CANCEL_ANIM_MS, fromX: px, fromY: py, toX: home.homeX, toY: home.homeY, piece: clonePiece(dragging.piece) };
+    startReturnToHome(dragging);
     dragging = null;
   }
 
@@ -379,7 +415,6 @@
     }
     if(dragging){
       dragging.x = p.x; dragging.y = p.y;
-      // ✅ 只有“位置”和“位移”两个条件都满足才取消
       if(dragging.y >= CANCEL_ZONE_Y && (dragging.y - dragging.startY) >= CANCEL_DRAG_DY){
         triggerCancel();
       }
@@ -408,11 +443,11 @@
         if(!anyPlacementPossible(hand)){ gameOver=true; best=Math.max(best,score); localStorage.setItem('best',String(best)); }
         updateHUD();
       }else{
-        dragging=null; // 不可放：回手牌（瞬移）
+        startReturnToHome(dragging); // 未放置成功则回位
+        dragging=null;
       }
       if(evt.cancelable) evt.preventDefault(); removeDocDrag(); return;
     }
-    // 点击旋转
     if(pressSlot && Date.now()-pressStart < LONG_PRESS_MS){
       const i=pressSlot.index; if(isPiece(hand[i])) hand[i]=rotatePiece(hand[i]);
       updateHUD();
@@ -452,7 +487,7 @@
     assert('undo restores grid', ()=> JSON.stringify(grid)===JSON.stringify(g0));
   })();
 
-    reset(); requestAnimationFrame(draw);
+  reset(); requestAnimationFrame(draw);
 })();
 </script>
 
