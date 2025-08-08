@@ -13,7 +13,7 @@
   <title>Block Blast · PWA（长按拖动 / 点击旋转 / 撤回 / 全局吸附）</title>
   <style>
     :root { --bg1:#fdfdfd; --bg2:#eef3fb; --grid:#c8d4e5; --cellEmpty:#e4eaf3; --ink:#102032; --ghostOk:rgba(102,166,255,.40); --ghostBad:rgba(239,91,91,.40); --hint:rgba(255,215,64,.55); }
-    html,body{margin:0;height:100%;background:var(--bg1);font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:var(--ink)}
+    html,body{margin:0;height:100%;background:var(--bg1);font-family:'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;overscroll-behavior-y:none}
     .wrap{max-width:480px;margin:auto;padding:16px}
     .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
     .score{font-size:22px;font-weight:800;color:#3756c2;letter-spacing:.2px}
@@ -21,7 +21,7 @@
     .btn,.toolbtn{border:0;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:700;font-size:14px;background:linear-gradient(145deg,#4e73df,#3756c2);color:#fff;box-shadow:0 4px 10px rgba(0,0,0,.15);transition:transform .1s,box-shadow .1s}
     .btn:hover,.toolbtn:hover{transform:translateY(-1px) scale(1.03);box-shadow:0 6px 14px rgba(0,0,0,.2)}
     .toolbtn[disabled],.btn[disabled]{opacity:.4;cursor:not-allowed}
-    canvas{width:100%;height:auto;display:block;background:var(--bg2);border-radius:20px;box-shadow:0 8px 24px rgba(0,0,0,.12)}
+    canvas{width:100%;height:auto;display:block;background:var(--bg2);border-radius:20px;box-shadow:0 8px 24px rgba(0,0,0,.12);touch-action:none;-webkit-user-select:none;user-select:none}
     .toolbar{display:flex;gap:8px;margin:10px 0 0;justify-content:center;flex-wrap:wrap}
     .hint{margin-top:12px;font-size:13px;color:#4a5568;line-height:1.5}
   </style>
@@ -39,26 +39,23 @@
     <div class="toolbar">
       <button class="toolbtn" id="undoBtn" disabled>撤回</button>
       <button class="toolbtn" id="hintBtn">提示</button>
-      <button class="toolbtn" id="pwaBtn">生成PWA文件</button>
     </div>
     <div class="hint">操作：<strong>长按</strong>手牌开始拖动（全程“吸附”到指针），<strong>点击</strong>手牌旋转；落子后立即补牌；支持<strong>撤回上一步</strong>。吸附预览为<strong>全局吸附</strong>：从选中到放下始终可见。</div>
   </div>
 <script>
 (function(){
-  // —— 全局错误可视化，避免“白屏不知错” ——
+  // ===== 环境开关（生产不挡屏，开发模式在 URL 后加 #dev 或 ?dev=1 才显示错误层） =====
+  const DEV = /(?:[#?].*\bdev=1\b)|(?:#.*\bdev\b)/i.test(location.href);
   window.onerror = function(msg, src, lineno, colno, err){
+    if(!DEV){ try{ console.error(msg, src+':'+lineno+':'+colno, err); }catch(e){} return; }
     try{
-      const c = document.getElementById('game');
-      if(!c) return;
-      const x = c.getContext('2d');
-      if(!x) return;
+      const c = document.getElementById('game'); if(!c) return;
+      const x = c.getContext('2d'); if(!x) return;
       x.setTransform(1,0,0,1,0,0);
-      x.fillStyle = 'rgba(0,0,0,0.65)';
-      x.fillRect(0,0,c.width,c.height);
-      x.fillStyle = '#fff';
-      x.font = '14px monospace';
+      x.fillStyle = 'rgba(0,0,0,0.65)'; x.fillRect(0,0,c.width,c.height);
+      x.fillStyle = '#fff'; x.font = '14px monospace';
       const text = (msg || 'Error') + '\n' + (err && err.stack ? err.stack : (src+':'+lineno+':'+colno));
-      const lines = text.split(/\n/).slice(0,10);
+      const lines = text.split(/\n/).slice(0,12);
       lines.forEach((line,i)=> x.fillText(line, 12, 24 + i*18));
     }catch(e){}
   };
@@ -127,7 +124,21 @@
   function reset(){ grid=Array.from({length:BOARD_SIZE},()=>Array(BOARD_SIZE).fill(0)); score=0; streak=0; gameOver=false; hand=dealHand(); spawnAnim=[{t:0},{t:0},{t:0}]; dragging=null; returnAnim=null; lastCleared=null; flashTimer=0; hintTarget=null; hintExpire=0; particles.length=0; history.length=0; updateHUD(); }
 
   // ===== 工具 =====
-  function getPointerPos(evt){ const r=cvs.getBoundingClientRect(); const x=(evt.touches?evt.touches[0].clientX:evt.clientX)-r.left; const y=(evt.touches?evt.touches[0].clientY:evt.clientY)-r.top; return {x:x*(CANVAS_W/r.width),y:y*(CANVAS_H/r.height)}; }
+  function getPointerPos(evt){
+    const r=cvs.getBoundingClientRect();
+    let clientX, clientY;
+    if (evt && evt.touches && evt.touches.length){
+      clientX = evt.touches[0].clientX; clientY = evt.touches[0].clientY;
+    } else if (evt && evt.changedTouches && evt.changedTouches.length){
+      // touchend/touchcancel: touches 为空，使用 changedTouches
+      clientX = evt.changedTouches[0].clientX; clientY = evt.changedTouches[0].clientY;
+    } else {
+      clientX = evt.clientX; clientY = evt.clientY;
+    }
+    const x = (clientX - r.left) * (CANVAS_W / r.width);
+    const y = (clientY - r.top)  * (CANVAS_H / r.height);
+    return {x,y};
+  }
   function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); ctx.fill(); }
   function lerp(a,b,t){ return a+(b-a)*t; }
   function fillTile(x,y,pair){ const g=ctx.createLinearGradient(x,y,x+cellSize,y+cellSize); g.addColorStop(0,pair[0]); g.addColorStop(1,pair[1]); ctx.fillStyle=g; roundRect(x,y,cellSize,cellSize,7); }
@@ -156,7 +167,16 @@
 
     for(let i=0;i<3;i++){ const p=hand[i]; if(!isPiece(p)) continue; if(dragging && dragging.index===i) continue; const pose=handSlotPose(i); let sc=pose.scale; if(spawnAnim[i]){ spawnAnim[i].t=Math.min(1,spawnAnim[i].t+0.14); const t=spawnAnim[i].t; const overshoot=1.12; sc=pose.scale*(1+(overshoot-1)*(1-Math.pow(1-t,3))); if(t>=1) spawnAnim[i]=null; } drawPieceAt(p,pose.x,pose.y,sc); }
 
-    if(returnAnim){ const t=Math.min(1,returnAnim.t+=0.12); const e=1-Math.pow(1-t,3); const x=lerp(returnAnim.fromX,returnAnim.toX,e), y=lerp(returnAnim.fromY,returnAnim.toY,e); drawPieceAt(returnAnim.piece,x,y,1); if(t>=1) returnAnim=null; }
+    if(returnAnim){
+      // 回手牌：位置 easeOutCubic + 轻微弹性缩放
+      const t=Math.min(1, (returnAnim.t += 0.10));
+      const e=1-Math.pow(1-t,3);
+      const x=lerp(returnAnim.fromX,returnAnim.toX,e);
+      const y=lerp(returnAnim.fromY,returnAnim.toY,e);
+      const scale=1 + 0.10 * (1-e) * e * 4; // 中段略放大
+      drawPieceAt(returnAnim.piece,x,y,scale);
+      if(t>=1) returnAnim=null;
+    }
 
     if(dragging && isPiece(dragging.piece)){
       // 全局吸附预览：无论是否进入棋盘区域都显示 ghost
@@ -236,7 +256,7 @@
   (function tests(){
     const ok=n=>console.log('%c✓ '+n,'color:#2e7d32');
     const ng=(n,e)=>console.error('%c✗ '+n,'color:#b00020',e);
-    const assert=(n,f)=>{try{if(!f()) throw 0; ok(n);}catch(e){ng(n,e);}};
+    const assert=(n,f)=>{try{if(!f()) throw 0; ok(n);}catch(e){ng(n,e);} };
 
     // 保留：初始三张
     hand=dealHand(); assert('initial 3 pieces', ()=> hand.filter(isPiece).length===3);
@@ -261,6 +281,17 @@
     assert('canPlace returns false when offboard', ()=> !canPlace(clonePiece(PIECES[0]), -1, -1));
     grid[0]=Array(BOARD_SIZE).fill(1); const cleared=clearLines();
     assert('clearLines empties full row', ()=> cleared.rows.includes(0) && grid[0].every(v=>v===0));
+
+    // 新增：getPointerPos 在 touchend 事件不抛错
+    const fakeRect = {left:0, top:0, width:CANVAS_W, height:CANVAS_H};
+    const _getBoundingClientRect = cvs.getBoundingClientRect.bind(cvs);
+    cvs.getBoundingClientRect = ()=>fakeRect; // stub
+    try{
+      const p1 = getPointerPos({changedTouches:[{clientX:10, clientY:20}]});
+      assert('getPointerPos with changedTouches', ()=> typeof p1.x==='number' && typeof p1.y==='number');
+    } finally {
+      cvs.getBoundingClientRect = _getBoundingClientRect; // restore
+    }
   })();
 
   reset(); requestAnimationFrame(draw);
@@ -268,95 +299,12 @@
 </script>
 
 <script>
-// ====== PWA 注册（若 sw.js 已放在同目录，自动注册） ======
+// ====== PWA 注册（若 sw.js 已放在同目录，自动注册；不生成文件） ======
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch(console.warn);
   });
 }
-
-// ====== 生成 PWA 资产（manifest、sw、图标），便于你一起部署 ======
-(function(){
-  const btn = document.getElementById('pwaBtn');
-  if(!btn) return;
-  btn.addEventListener('click', generatePWAAssets);
-
-  function generatePWAAssets(){
-    const appName='Block Blast';
-    const manifest={
-      name: appName,
-      short_name: 'Blast',
-      description: 'Block Blast 网页版 – 长按拖动、点击旋转、撤回、全局吸附',
-      start_url: './',
-      scope: './',
-      display: 'standalone',
-      orientation: 'portrait',
-      background_color: '#eef3fb',
-      theme_color: '#3756c2',
-      icons:[
-        {src:'icons/icon-192.png',sizes:'192x192',type:'image/png'},
-        {src:'icons/icon-512.png',sizes:'512x512',type:'image/png'}
-      ]
-    };
-
-    const sw = `// sw.js — 简易离线缓存
-const CACHE_NAME='blast-cache-v1';
-const ASSETS=[
-  './',
-  './index.html',
-  './manifest.webmanifest',
-  './sw.js'
-];
-self.addEventListener('install',e=>{
-  e.waitUntil(caches.open(CACHE_NAME).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting()));
-});
-self.addEventListener('activate',e=>{
-  e.waitUntil(caches.keys().then(keys=>Promise.all(keys.map(k=>k!==CACHE_NAME&&caches.delete(k)))));
-  self.clients.claim();
-});
-self.addEventListener('fetch',e=>{
-  const req=e.request;
-  e.respondWith(
-    caches.match(req).then(hit=> hit || fetch(req).then(resp=>{
-      const copy=resp.clone();
-      caches.open(CACHE_NAME).then(c=>c.put(req,copy));
-      return resp;
-    }).catch(()=>caches.match('./')))
-  );
-});`;
-
-    // 触发下载：manifest.webmanifest、sw.js、icons
-    downloadText(JSON.stringify(manifest,null,2), 'manifest.webmanifest', 'application/manifest+json');
-    downloadText(sw, 'sw.js', 'application/javascript');
-
-    // 生成简单的圆角图标 192/512
-    makeIcon(192).then(b=>downloadBlob(b,'icons/icon-192.png'));
-    makeIcon(512).then(b=>downloadBlob(b,'icons/icon-512.png'));
-
-    alert('已生成 4 个文件：manifest.webmanifest / sw.js / icons/icon-192.png / icons/icon-512.png\n请与本页 HTML 放同一目录后再部署。');
-  }
-  function downloadText(text,filename,type){
-    const blob=new Blob([text],{type});
-    downloadBlob(blob,filename);
-  }
-  function downloadBlob(blob,filename){
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(blob);
-    a.download=filename; a.click();
-    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
-  }
-  function makeIcon(size){
-    const c=document.createElement('canvas'); c.width=c.height=size; const x=c.getContext('2d');
-    // 背景渐变
-    const g=x.createLinearGradient(0,0,size,size); g.addColorStop(0,'#4e73df'); g.addColorStop(1,'#3756c2');
-    x.fillStyle=g; round(x,0,0,size,size,Math.floor(size*0.22)); x.fill();
-    // 文本
-    x.fillStyle='rgba(255,255,255,0.92)'; x.font=`${Math.floor(size*0.32)}px Helvetica, Arial, sans-serif`; x.textAlign='center'; x.textBaseline='middle';
-    x.fillText('BB', size/2, size/2);
-    return new Promise(res=> c.toBlob(res,'image/png'));
-    function round(ctx,x0,y0,w,h,r){ ctx.beginPath(); ctx.moveTo(x0+r,y0); ctx.arcTo(x0+w,y0,x0+w,y0+h,r); ctx.arcTo(x0+w,y0+h,x0,y0+h,r); ctx.arcTo(x0,y0+h,x0,y0,r); ctx.arcTo(x0,y0,x0+w,y0,r); ctx.closePath(); }
-  }
-})();
 </script>
 </body>
 </html>
