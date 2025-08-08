@@ -45,7 +45,7 @@
 <script>
 (function(){
   // ===== 环境开关（生产不挡屏，开发模式在 URL 后加 #dev 或 ?dev=1 才显示错误层） =====
-  const DEV = /(?:[#?].*dev=1)|(?:#.*dev)/i.test(location.href);
+  const DEV = /(?:[#?].*\bdev=1\b)|(?:#.*\bdev\b)/i.test(location.href);
   window.onerror = function(msg, src, lineno, colno, err){
     if(!DEV){ try{ console.error(msg, src+':'+lineno+':'+colno, err); }catch(e){} return; }
     try{
@@ -54,10 +54,8 @@
       x.setTransform(1,0,0,1,0,0);
       x.fillStyle = 'rgba(0,0,0,0.65)'; x.fillRect(0,0,c.width,c.height);
       x.fillStyle = '#fff'; x.font = '14px monospace';
-      const text = (msg || 'Error') + '
-' + (err && err.stack ? err.stack : (src+':'+lineno+':'+colno));
-      const lines = text.split(/
-/).slice(0,12);
+      const text = (msg || 'Error') + '\n' + (err && err.stack ? err.stack : (src+':'+lineno+':'+colno));
+      const lines = text.split(/\n/).slice(0,12);
       lines.forEach((line,i)=> x.fillText(line, 12, 24 + i*18));
     }catch(e){}
   };
