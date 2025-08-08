@@ -1,0 +1,23 @@
+{
+  "name": "Block Blast",
+  "short_name": "Blast",
+  "description": "Block Blast 网页版 – 长按拖动、点击旋转、撤回、全局吸附",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#eef3fb",
+  "theme_color": "#3756c2",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
