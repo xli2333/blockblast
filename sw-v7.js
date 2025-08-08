@@ -1,0 +1,45 @@
+// sw-v7.js — navigation: network-first; assets: cache-first
+const VER = 'v7';
+const RUNTIME = `blast-runtime-${VER}`;
+const ASSETS  = `blast-assets-${VER}`;
+const PRECACHE = [
+  './manifest.webmanifest',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+];
+
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(ASSETS).then(c => c.addAll(PRECACHE)).then(()=>self.skipWaiting()));
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.map(k => (k===ASSETS || k===RUNTIME) ? null : caches.delete(k)))
+    ).then(()=>self.clients.claim())
+  );
+});
+
+// HTML/导航：优先网络，失败回退缓存（确保拿到最新 index.html）
+self.addEventListener('fetch', e => {
+  const req = e.request;
+  const isHtml = req.mode === 'navigate' || (req.headers.get('accept')||'').includes('text/html');
+  if (isHtml) {
+    e.respondWith(
+      fetch(req).then(resp => {
+        const copy = resp.clone();
+        caches.open(RUNTIME).then(c => c.put(req, copy));
+        return resp;
+      }).catch(() => caches.match(req).then(hit => hit || caches.match('./index.html')))
+    );
+    return;
+  }
+  // 其它静态资源：cache-first
+  e.respondWith(
+    caches.match(req).then(hit => hit || fetch(req).then(resp => {
+      const copy = resp.clone();
+      caches.open(RUNTIME).then(c => c.put(req, copy));
+      return resp;
+    }))
+  );
+});
